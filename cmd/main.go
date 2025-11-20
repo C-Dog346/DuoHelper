@@ -1,96 +1,94 @@
 package main
 
 import (
-	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
-	"time"
 
-	"github.com/chromedp/cdproto/network" // REQUIRED for cookie extraction
-	"github.com/chromedp/chromedp"
+	"github.com/go-toast/toast"
 )
 
-func main() {
-	// --- 1. Credential Setup (Variable names maintained) ---
-	username := os.Getenv("DUO_USER")
-	password := os.Getenv("DUO_PASS")
+// Tokens stores your JWT for Duolingo API access
+type Tokens struct {
+	JWT string `json:"jwt"`
+}
 
-	if username == "" || password == "" {
-		log.Fatal("DUO_USER or DUO_PASS not set")
-	}
-
-	// --- 2. Browser Context Setup ---
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", true),
-		chromedp.Flag("disable-gpu", false),
-	)
-
-	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
-	defer cancel()
-
-	ctx, cancel := chromedp.NewContext(allocCtx)
-	defer cancel()
-
-	ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	// Enable the Network protocol for cookie access
-	if err := chromedp.Run(ctx, network.Enable()); err != nil {
-		log.Fatal(err)
-	}
-
-	var jwtToken string
-	var pageTitle string
-
-	// --- 3. Automation and Extraction ---
-	err := chromedp.Run(ctx,
-		// 1. Go to login page
-		chromedp.Navigate("https://www.duolingo.com/log-in"),
-		chromedp.WaitVisible(`input[placeholder="Email or username"]`, chromedp.ByQuery),
-
-		// 2. Fill username and password
-		chromedp.SendKeys(`input[placeholder="Email or username"]`, username, chromedp.ByQuery),
-		chromedp.SendKeys(`input[placeholder="Password"]`, password, chromedp.ByQuery),
-
-		// 3. Click login button and wait for navigation
-		chromedp.Click(`button[type="submit"]`, chromedp.ByQuery),
-
-		// 4. Wait for successful login (URL should change away from log-in page)
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			for i := 0; i < 30; i++ {
-				var currentURL string
-				if err := chromedp.Location(&currentURL).Do(ctx); err != nil {
-					return err
-				}
-				if currentURL != "" && !chromedp.Evaluate(`window.location.href.includes('log-in')`, nil).Do(ctx) {
-					break
-				}
-				time.Sleep(500 * time.Millisecond)
-			}
-			return nil
-		}),
-
-		// 5. Get the page title
-		chromedp.Title(&pageTitle),
-	)
-
+// loadToken reads tokens.json and returns the JWT
+func loadToken() string {
+	b, err := os.ReadFile("tokens.json")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to read tokens.json: %v", err)
 	}
 
-	// --- 4. Output ---
-	fmt.Println("-------------------------------------------------")
-	fmt.Printf("📄 Page title after login: %s\n", pageTitle)
-	fmt.Println("-------------------------------------------------")
-
-	// Output the extracted JWT token
-	if jwtToken == "" {
-		log.Fatal("Token not found (jwt_token cookie was missing)")
+	var t Tokens
+	if err := json.Unmarshal(b, &t); err != nil {
+		log.Fatalf("Invalid JSON in tokens.json: %v", err)
 	}
 
-	fmt.Println("-------------------------------------------------")
-	fmt.Println("✅ Auth token extracted successfully:")
-	fmt.Println(jwtToken)
-	fmt.Println("-------------------------------------------------")
+	if t.JWT == "" {
+		log.Fatal("JWT token is empty in tokens.json")
+	}
+
+	return t.JWT
+}
+
+// getUserInfo calls the Duolingo API and returns user data
+func getUserInfo(jwt string) map[string]interface{} {
+	req, err := http.NewRequest("GET", "https://www.duolingo.com/users/CallumClow5", nil)
+	if err != nil {
+		log.Fatalf("Failed to create HTTP request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Fatalf("HTTP request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var data map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		log.Fatalf("Failed to decode JSON response: %v", err)
+	}
+
+	return data
+}
+
+// sendNotification displays a Windows Toast notification
+func sendNotification(message string) {
+	notification := toast.Notification{
+		AppID:   "Duolingo Notifier",
+		Title:   "Duolingo Reminder",
+		Message: message,
+	}
+	if err := notification.Push(); err != nil {
+		log.Printf("Failed to send notification: %v", err)
+	}
+}
+
+// checkTodayTask returns true if the streak has been extended today
+func checkTodayTask(data map[string]interface{}) bool {
+	extended, ok := data["streak_extended_today"].(bool)
+	if !ok {
+		log.Println("Warning: streak_extended_today not found, assuming false")
+		return false
+	}
+	return extended
+}
+
+func main() {
+	jwt := loadToken()
+	data := getUserInfo(jwt)
+
+	doneToday := checkTodayTask(data)
+
+	if doneToday {
+		fmt.Println("✔ You have already done your Duolingo task today!")
+		sendNotification("You have already completed today's Duolingo lesson! ✅")
+	} else {
+		fmt.Println("❌ You have NOT done your Duolingo task today!")
+		sendNotification("You have NOT completed today's Duolingo lesson! ❌")
+	}
 }
