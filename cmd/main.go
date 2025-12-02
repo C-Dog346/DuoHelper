@@ -1,9 +1,10 @@
 ﻿// TO DO:
+// Test window creds to see if the code works down all paths and edge cases
+// - After the jwt is updated upon re-login, re-check if today's task is done
 // - Improve error handling and logging
 // - Add unit tests for functions
 // - Modularise code for use on any windows computer with chrome
 // - Allow user to specify Duolingo username
-// - Improve data security (encrypt JWT token, dont store it on gihub)
 // - Add support for other OS (macOS, Linux)
 package main
 
@@ -15,11 +16,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"time"
 
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
+	"github.com/danieljoos/wincred"
 	"github.com/go-toast/toast"
 )
 
@@ -27,28 +28,33 @@ type Tokens struct {
 	JWT string `json:"jwt"`
 }
 
-// loadToken reads the JWT token from tokens.json
+// loadToken reads the JWT token from Windows Credential Manager
 func loadToken() string {
-	exe, _ := os.Executable()
-	tokenPath := filepath.Join(filepath.Dir(exe), "tokens.json")
-
-	b, err := os.ReadFile(tokenPath)
+	cred, err := wincred.GetGenericCredential("DuoHelper_JWT")
 	if err != nil {
-		b, err = os.ReadFile("tokens.json")
-		if err != nil {
-			log.Fatalf("Failed to read tokens.json: %v", err)
-		}
+		log.Fatalf("Failed to load JWT token from Credential Manager: %v", err)
 	}
 
-	var t Tokens
-	if err := json.Unmarshal(b, &t); err != nil {
-		log.Fatalf("Invalid JSON: %v", err)
-	}
-	if t.JWT == "" {
+	if len(cred.CredentialBlob) == 0 {
 		log.Fatal("JWT token is empty")
 	}
 
-	return t.JWT
+	return string(cred.CredentialBlob)
+}
+
+// saveToken saves the JWT token to Windows Credential Manager
+func saveToken(jwt string) bool {
+	cred := wincred.NewGenericCredential("DuoHelper_JWT")
+	cred.CredentialBlob = []byte(jwt)
+	cred.Persist = wincred.PersistLocalMachine
+	cred.UserName = "DuoHelper"
+
+	err := cred.Write()
+	if err != nil {
+		fmt.Printf("Failed to save JWT token: %v\n", err)
+		return false
+	}
+	return true
 }
 
 // getUserInfo fetches user information from Duolingo API
@@ -127,37 +133,17 @@ func promptLogin() {
 
 	if err != nil || jwt == "" {
 		fmt.Println("❌ Failed to extract JWT token.")
-		fmt.Println("Please update tokens.json manually.")
+		fmt.Println("Please try logging in again.")
 		return
 	}
 
-	fmt.Printf("Extracted JWT: %s\n", jwt)
+	fmt.Printf("✓ Extracted JWT token successfully\n")
 
-	tokens := Tokens{JWT: jwt}
-	data, _ := json.MarshalIndent(tokens, "", "  ")
-
-	// Save to bin directory
-	binPath := filepath.Join("D:\\Code\\DuoHelper\\bin", "tokens.json")
-	fmt.Printf("Saving to bin: %s\n", binPath)
-	err = os.WriteFile(binPath, data, 0644)
-	if err != nil {
-		fmt.Printf("Failed to write to bin: %v\n", err)
-	} else {
-		fmt.Printf("✓ Saved to bin\n")
+	// Save to Windows Credential Manager
+	if !saveToken(jwt) {
+		fmt.Println("❌ Failed to save JWT token.")
+		fmt.Println("Please contact support or try again.")
 	}
-
-	// Save to cmd directory
-	cmdPath := filepath.Join("D:\\Code\\DuoHelper\\cmd", "tokens.json")
-	fmt.Printf("Saving to cmd: %s\n", cmdPath)
-	err = os.WriteFile(cmdPath, data, 0644)
-	if err != nil {
-		fmt.Printf("Failed to write to cmd: %v\n", err)
-	} else {
-		fmt.Printf("✓ Saved to cmd\n")
-	}
-
-	fmt.Println("\n✓ JWT token saved successfully!")
-	fmt.Println("Please run the program again.")
 }
 
 // checkTodayTask checks if the user has completed today's task
@@ -237,11 +223,20 @@ func main() {
 	jwt := loadToken()
 	data := getUserInfo(jwt)
 	if !checkJWTValidity(data) {
-		fmt.Println("❌ Invalid JWT token! Please update tokens.json.")
-		sendNotification("Your Duolingo JWT token is invalid! ❌")
+		fmt.Println("❌ Invalid JWT token! Refreshing...")
+		sendNotification("Your Duolingo JWT token is invalid! Refreshing...")
 		promptLogin()
-		return
+
+		// After successful login, reload token and check task
+		jwt = loadToken()
+		data = getUserInfo(jwt)
+		if !checkJWTValidity(data) {
+			fmt.Println("❌ Still unable to validate JWT after refresh. Please try again later.")
+			return
+		}
+		fmt.Println("✓ JWT refreshed successfully! Checking today's task...")
 	}
+
 	doneToday := checkTodayTask(data)
 
 	if doneToday {
