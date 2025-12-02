@@ -56,6 +56,19 @@ func getUserInfo(jwt string) map[string]interface{} {
 	return data
 }
 
+// checkJWTValidity checks if the JWT token is valid based on user data
+func checkJWTValidity(data map[string]interface{}) bool {
+	if _, ok := data["username"]; !ok {
+		return false
+	}
+	return true
+}
+
+// promptLogin prompts the user to log in to Duolingo to obtain a new JWT token
+func promptLogin() {
+
+}
+
 // checkTodayTask checks if the user has completed today's task
 func checkTodayTask(data map[string]interface{}) bool {
 	extended, _ := data["streak_extended_today"].(bool)
@@ -132,6 +145,12 @@ func main() {
 
 	jwt := loadToken()
 	data := getUserInfo(jwt)
+	if !checkJWTValidity(data) {
+		fmt.Println("❌ Invalid JWT token! Please update tokens.json.")
+		sendNotification("Your Duolingo JWT token is invalid! ❌")
+		promptLogin()
+		return
+	}
 	doneToday := checkTodayTask(data)
 
 	if doneToday {
