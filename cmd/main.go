@@ -29,17 +29,13 @@ type Tokens struct {
 }
 
 // loadToken reads the JWT token from Windows Credential Manager
-func loadToken() string {
+func loadToken() (string, bool) {
 	cred, err := wincred.GetGenericCredential("DuoHelper_JWT")
-	if err != nil {
-		log.Fatalf("Failed to load JWT token from Credential Manager: %v", err)
+	if err != nil || len(cred.CredentialBlob) == 0 {
+		return "", false
 	}
 
-	if len(cred.CredentialBlob) == 0 {
-		log.Fatal("JWT token is empty")
-	}
-
-	return string(cred.CredentialBlob)
+	return string(cred.CredentialBlob), true
 }
 
 // saveToken saves the JWT token to Windows Credential Manager
@@ -220,7 +216,20 @@ func main() {
 		return
 	}
 
-	jwt := loadToken()
+	jwt, ok := loadToken()
+	if !ok {
+		fmt.Println("❌ No JWT token found! Please log in.")
+		promptLogin()
+
+		// After successful login, reload token and check task
+		jwt, ok = loadToken()
+		if !ok {
+			fmt.Println("❌ Still unable to load JWT after login. Please try again later.")
+			return
+		}
+		fmt.Println("✓ JWT saved successfully! Checking today's task...")
+	}
+
 	data := getUserInfo(jwt)
 	if !checkJWTValidity(data) {
 		fmt.Println("❌ Invalid JWT token! Refreshing...")
@@ -228,7 +237,11 @@ func main() {
 		promptLogin()
 
 		// After successful login, reload token and check task
-		jwt = loadToken()
+		jwt, ok = loadToken()
+		if !ok {
+			fmt.Println("❌ Unable to load JWT after refresh. Please try again later.")
+			return
+		}
 		data = getUserInfo(jwt)
 		if !checkJWTValidity(data) {
 			fmt.Println("❌ Still unable to validate JWT after refresh. Please try again later.")
