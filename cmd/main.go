@@ -1,6 +1,14 @@
-﻿package main
+﻿// TO DO:
+// - Improve error handling and logging
+// - Add unit tests for functions
+// - Modularise code for use on any windows computer with chrome
+// - Allow user to specify Duolingo username
+// - Improve data security (encrypt JWT token, dont store it on gihub)
+// - Add support for other OS (macOS, Linux)
+package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,7 +16,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
+	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/chromedp"
 	"github.com/go-toast/toast"
 )
 
@@ -64,9 +75,89 @@ func checkJWTValidity(data map[string]interface{}) bool {
 	return true
 }
 
-// promptLogin prompts the user to log in to Duolingo to obtain a new JWT token
 func promptLogin() {
+	fmt.Println("\n=== JWT Token Update Required ===")
+	fmt.Println("Opening browser for login...")
+	fmt.Println("Please log in to Duolingo. The window will close automatically after 3 minutes.")
 
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", false),
+		chromedp.Flag("disable-gpu", false),
+		chromedp.WindowSize(1280, 800),
+	)
+
+	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
+	defer cancel()
+
+	ctx, cancel := chromedp.NewContext(allocCtx)
+	defer cancel()
+
+	ctx, cancel = context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+
+	var jwt string
+
+	err := chromedp.Run(ctx,
+		chromedp.Navigate("https://www.duolingo.com"),
+		chromedp.WaitVisible(`body`, chromedp.ByQuery),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			// Poll for jwt_token cookie until found or timeout
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-ticker.C:
+					cookies, err := network.GetCookies().Do(ctx)
+					if err != nil {
+						continue
+					}
+					for _, cookie := range cookies {
+						if cookie.Name == "jwt_token" {
+							jwt = cookie.Value
+							return nil
+						}
+					}
+				}
+			}
+		}),
+	)
+
+	if err != nil || jwt == "" {
+		fmt.Println("❌ Failed to extract JWT token.")
+		fmt.Println("Please update tokens.json manually.")
+		return
+	}
+
+	fmt.Printf("Extracted JWT: %s\n", jwt)
+
+	tokens := Tokens{JWT: jwt}
+	data, _ := json.MarshalIndent(tokens, "", "  ")
+
+	// Save to bin directory
+	binPath := filepath.Join("D:\\Code\\DuoHelper\\bin", "tokens.json")
+	fmt.Printf("Saving to bin: %s\n", binPath)
+	err = os.WriteFile(binPath, data, 0644)
+	if err != nil {
+		fmt.Printf("Failed to write to bin: %v\n", err)
+	} else {
+		fmt.Printf("✓ Saved to bin\n")
+	}
+
+	// Save to cmd directory
+	cmdPath := filepath.Join("D:\\Code\\DuoHelper\\cmd", "tokens.json")
+	fmt.Printf("Saving to cmd: %s\n", cmdPath)
+	err = os.WriteFile(cmdPath, data, 0644)
+	if err != nil {
+		fmt.Printf("Failed to write to cmd: %v\n", err)
+	} else {
+		fmt.Printf("✓ Saved to cmd\n")
+	}
+
+	fmt.Println("\n✓ JWT token saved successfully!")
+	fmt.Println("Please run the program again.")
 }
 
 // checkTodayTask checks if the user has completed today's task
