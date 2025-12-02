@@ -29,3 +29,6 @@ go.work.sum
 
 # Editor/IDE
 .vscode/
+
+# Sensitive token files (deprecated - now using Windows Credential Manager)
+tokens.json
