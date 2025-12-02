@@ -1,11 +1,9 @@
 ﻿// TO DO:
-// Test window creds to see if the code works down all paths and edge cases
-// - After the jwt is updated upon re-login, re-check if today's task is done
 // - Improve error handling and logging
 // - Add unit tests for functions
 // - Modularise code for use on any windows computer with chrome
-// - Allow user to specify Duolingo username
 // - Add support for other OS (macOS, Linux)
+
 package main
 
 import (
@@ -38,6 +36,31 @@ func loadToken() (string, bool) {
 	return string(cred.CredentialBlob), true
 }
 
+// loadUsername reads the Duolingo username from Windows Credential Manager
+func loadUsername() (string, bool) {
+	cred, err := wincred.GetGenericCredential("DuoHelper_Username")
+	if err != nil || len(cred.CredentialBlob) == 0 {
+		return "", false
+	}
+
+	return string(cred.CredentialBlob), true
+}
+
+// saveUsername saves the Duolingo username to Windows Credential Manager
+func saveUsername(username string) bool {
+	cred := wincred.NewGenericCredential("DuoHelper_Username")
+	cred.CredentialBlob = []byte(username)
+	cred.Persist = wincred.PersistLocalMachine
+	cred.UserName = "DuoHelper"
+
+	err := cred.Write()
+	if err != nil {
+		fmt.Printf("Failed to save username: %v\n", err)
+		return false
+	}
+	return true
+}
+
 // saveToken saves the JWT token to Windows Credential Manager
 func saveToken(jwt string) bool {
 	cred := wincred.NewGenericCredential("DuoHelper_JWT")
@@ -54,8 +77,8 @@ func saveToken(jwt string) bool {
 }
 
 // getUserInfo fetches user information from Duolingo API
-func getUserInfo(jwt string) map[string]interface{} {
-	req, _ := http.NewRequest("GET", "https://www.duolingo.com/users/CallumClow5", nil)
+func getUserInfo(jwt, username string) map[string]interface{} {
+	req, _ := http.NewRequest("GET", "https://www.duolingo.com/users/"+username, nil)
 	req.Header.Set("Authorization", "Bearer "+jwt)
 
 	resp, err := http.DefaultClient.Do(req)
@@ -195,13 +218,36 @@ func main() {
 			return
 
 		case "help":
-			fmt.Println("Commands:\n  settime HH:MM\n  help")
+			fmt.Println("Commands:\n  settime HH:MM\n  setusername <username>\n  help")
+			return
+
+		case "setusername":
+			if len(os.Args) < 3 {
+				fmt.Println("Usage: DuoHelper.exe setusername <username>")
+				return
+			}
+			if saveUsername(os.Args[2]) {
+				fmt.Printf("✓ Username set to: %s\n", os.Args[2])
+			} else {
+				fmt.Println("❌ Failed to save username")
+			}
 			return
 
 		default:
 			fmt.Printf("Unknown command. Run with 'help' for usage.\n")
 			return
 		}
+	}
+
+	// Check and prompt for username if not set
+	username, ok := loadUsername()
+	if !ok {
+		fmt.Print("Enter your Duolingo username: ")
+		fmt.Scanln(&username)
+		if !saveUsername(username) {
+			log.Fatal("Failed to save username")
+		}
+		fmt.Printf("✓ Username set to: %s\n", username)
 	}
 
 	if !taskExists() {
@@ -230,7 +276,7 @@ func main() {
 		fmt.Println("✓ JWT saved successfully! Checking today's task...")
 	}
 
-	data := getUserInfo(jwt)
+	data := getUserInfo(jwt, username)
 	if !checkJWTValidity(data) {
 		fmt.Println("❌ Invalid JWT token! Refreshing...")
 		sendNotification("Your Duolingo JWT token is invalid! Refreshing...")
@@ -242,7 +288,7 @@ func main() {
 			fmt.Println("❌ Unable to load JWT after refresh. Please try again later.")
 			return
 		}
-		data = getUserInfo(jwt)
+		data = getUserInfo(jwt, username)
 		if !checkJWTValidity(data) {
 			fmt.Println("❌ Still unable to validate JWT after refresh. Please try again later.")
 			return
