@@ -22,82 +22,77 @@ import (
 	"github.com/go-toast/toast"
 )
 
-type Tokens struct {
-	JWT string `json:"jwt"`
-}
+const (
+	credentialJWT      = "DuoHelper_JWT"
+	credentialUsername = "DuoHelper_Username"
+	credentialUser     = "DuoHelper"
+	taskName           = "DuolingoDailyReminder"
+	duolingoAPIBase    = "https://www.duolingo.com"
+	loginTimeout       = 3 * time.Minute
+	pollInterval       = 2 * time.Second
+)
 
 // loadToken reads the JWT token from Windows Credential Manager
 func loadToken() (string, bool) {
-	cred, err := wincred.GetGenericCredential("DuoHelper_JWT")
+	cred, err := wincred.GetGenericCredential(credentialJWT)
 	if err != nil || len(cred.CredentialBlob) == 0 {
 		return "", false
 	}
-
 	return string(cred.CredentialBlob), true
 }
 
 // loadUsername reads the Duolingo username from Windows Credential Manager
 func loadUsername() (string, bool) {
-	cred, err := wincred.GetGenericCredential("DuoHelper_Username")
+	cred, err := wincred.GetGenericCredential(credentialUsername)
 	if err != nil || len(cred.CredentialBlob) == 0 {
 		return "", false
 	}
-
 	return string(cred.CredentialBlob), true
 }
 
 // saveUsername saves the Duolingo username to Windows Credential Manager
-func saveUsername(username string) bool {
-	cred := wincred.NewGenericCredential("DuoHelper_Username")
+func saveUsername(username string) error {
+	cred := wincred.NewGenericCredential(credentialUsername)
 	cred.CredentialBlob = []byte(username)
 	cred.Persist = wincred.PersistLocalMachine
-	cred.UserName = "DuoHelper"
-
-	err := cred.Write()
-	if err != nil {
-		fmt.Printf("Failed to save username: %v\n", err)
-		return false
-	}
-	return true
+	cred.UserName = credentialUser
+	return cred.Write()
 }
 
 // saveToken saves the JWT token to Windows Credential Manager
-func saveToken(jwt string) bool {
-	cred := wincred.NewGenericCredential("DuoHelper_JWT")
+func saveToken(jwt string) error {
+	cred := wincred.NewGenericCredential(credentialJWT)
 	cred.CredentialBlob = []byte(jwt)
 	cred.Persist = wincred.PersistLocalMachine
-	cred.UserName = "DuoHelper"
-
-	err := cred.Write()
-	if err != nil {
-		fmt.Printf("Failed to save JWT token: %v\n", err)
-		return false
-	}
-	return true
+	cred.UserName = credentialUser
+	return cred.Write()
 }
 
 // getUserInfo fetches user information from Duolingo API
-func getUserInfo(jwt, username string) map[string]interface{} {
-	req, _ := http.NewRequest("GET", "https://www.duolingo.com/users/"+username, nil)
+func getUserInfo(jwt, username string) (map[string]interface{}, error) {
+	req, err := http.NewRequest("GET", duolingoAPIBase+"/users/"+username, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Fatalf("HTTP request failed: %v", err)
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&data)
-	return data
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	return data, nil
 }
 
 // checkJWTValidity checks if the JWT token is valid based on user data
 func checkJWTValidity(data map[string]interface{}) bool {
-	if _, ok := data["username"]; !ok {
-		return false
-	}
-	return true
+	_, ok := data["username"]
+	return ok
 }
 
 func promptLogin() {
@@ -117,17 +112,16 @@ func promptLogin() {
 	ctx, cancel := chromedp.NewContext(allocCtx)
 	defer cancel()
 
-	ctx, cancel = context.WithTimeout(ctx, 3*time.Minute)
+	ctx, cancel = context.WithTimeout(ctx, loginTimeout)
 	defer cancel()
 
 	var jwt string
 
 	err := chromedp.Run(ctx,
-		chromedp.Navigate("https://www.duolingo.com"),
+		chromedp.Navigate(duolingoAPIBase),
 		chromedp.WaitVisible(`body`, chromedp.ByQuery),
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			// Poll for jwt_token cookie until found or timeout
-			ticker := time.NewTicker(2 * time.Second)
+			ticker := time.NewTicker(pollInterval)
 			defer ticker.Stop()
 
 			for {
@@ -156,12 +150,10 @@ func promptLogin() {
 		return
 	}
 
-	fmt.Printf("✓ Extracted JWT token successfully\n")
+	fmt.Println("✓ Extracted JWT token successfully")
 
-	// Save to Windows Credential Manager
-	if !saveToken(jwt) {
-		fmt.Println("❌ Failed to save JWT token.")
-		fmt.Println("Please contact support or try again.")
+	if err := saveToken(jwt); err != nil {
+		fmt.Printf("❌ Failed to save JWT token: %v\n", err)
 	}
 }
 
@@ -185,15 +177,15 @@ func sendNotification(message string) {
 
 // taskExists checks if the scheduled task already exists
 func taskExists() bool {
-	cmd := exec.Command("schtasks", "/Query", "/TN", "DuolingoDailyReminder")
+	cmd := exec.Command("schtasks", "/Query", "/TN", taskName)
 	return cmd.Run() == nil
 }
 
 // createScheduledTask creates or updates the scheduled task
-func createScheduledTask(exePath, time string) error {
+func createScheduledTask(exePath, scheduleTime string) error {
 	cmd := exec.Command("schtasks",
-		"/Create", "/SC", "DAILY", "/TN", "DuolingoDailyReminder",
-		"/TR", fmt.Sprintf(`"%s"`, exePath), "/ST", time, "/F", "/RL", "HIGHEST")
+		"/Create", "/SC", "DAILY", "/TN", taskName,
+		"/TR", fmt.Sprintf(`"%s"`, exePath), "/ST", scheduleTime, "/F", "/RL", "HIGHEST")
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -205,20 +197,56 @@ func createScheduledTask(exePath, time string) error {
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "setup":
+			if len(os.Args) < 4 {
+				fmt.Println("Usage: DuoHelper.exe setup <username> <time>")
+				fmt.Println("Example: DuoHelper.exe setup YourUsername 09:00")
+				return
+			}
+
+			username := os.Args[2]
+			if err := saveUsername(username); err != nil {
+				log.Fatalf("Failed to save username: %v", err)
+			}
+			fmt.Printf("✓ Username set to: %s\n", username)
+
+			exe, err := os.Executable()
+			if err != nil {
+				log.Fatalf("Failed to get executable path: %v", err)
+			}
+			scheduleTime := os.Args[3]
+			if err := createScheduledTask(exe, scheduleTime); err != nil {
+				log.Fatalf("Failed to create task: %v", err)
+			}
+			fmt.Printf("✓ Daily reminder scheduled for %s\n", scheduleTime)
+
+			// Prompt for login
+			fmt.Println("\n✓ Setup complete! Now logging in to extract JWT token...")
+			promptLogin()
+
+			_, ok := loadToken()
+			if !ok {
+				fmt.Println("❌ Login failed. Please run: DuoHelper.exe login")
+				return
+			}
+
+			fmt.Println("\n✅ All done! DuoHelper will check your Duolingo progress daily.")
+			fmt.Println("Run 'DuoHelper.exe help' to see available commands.")
+			return
+
 		case "settime":
 			if len(os.Args) < 3 {
 				fmt.Println("Usage: DuoHelper.exe settime HH:MM")
 				return
 			}
-			exe, _ := os.Executable()
+			exe, err := os.Executable()
+			if err != nil {
+				log.Fatalf("Failed to get executable path: %v", err)
+			}
 			if err := createScheduledTask(exe, os.Args[2]); err != nil {
 				log.Fatalf("Failed to update task: %v", err)
 			}
 			fmt.Printf("✓ Time updated to %s\n", os.Args[2])
-			return
-
-		case "help":
-			fmt.Println("Commands:\n  settime HH:MM\n  setusername <username>\n  help")
 			return
 
 		case "setusername":
@@ -226,83 +254,69 @@ func main() {
 				fmt.Println("Usage: DuoHelper.exe setusername <username>")
 				return
 			}
-			if saveUsername(os.Args[2]) {
-				fmt.Printf("✓ Username set to: %s\n", os.Args[2])
+			if err := saveUsername(os.Args[2]); err != nil {
+				fmt.Printf("❌ Failed to save username: %v\n", err)
+				return
+			}
+			fmt.Printf("✓ Username set to: %s\n", os.Args[2])
+			return
+
+		case "login":
+			fmt.Println("Opening browser for login...")
+			promptLogin()
+			_, ok := loadToken()
+			if ok {
+				fmt.Println("✓ Login successful!")
 			} else {
-				fmt.Println("❌ Failed to save username")
+				fmt.Println("❌ Login failed. Please try again.")
 			}
 			return
 
+		case "help":
+			fmt.Println("DuoHelper - Duolingo Daily Reminder")
+			fmt.Println("\nSetup (first time):")
+			fmt.Println("  setup <username> <time>    Set up username and daily reminder")
+			fmt.Println("                             Example: DuoHelper.exe setup YourUsername 09:00")
+			fmt.Println("\nCommands:")
+			fmt.Println("  settime HH:MM              Change reminder time")
+			fmt.Println("  setusername <username>     Change Duolingo username")
+			fmt.Println("  login                      Re-login to refresh JWT token")
+			fmt.Println("  help                       Show this help message")
+			return
+
 		default:
-			fmt.Printf("Unknown command. Run with 'help' for usage.\n")
+			fmt.Printf("Unknown command '%s'. Run 'DuoHelper.exe help' for usage.\n", os.Args[1])
 			return
 		}
 	}
 
-	// Check and prompt for username if not set
+	// Silent run mode (for scheduled task)
 	username, ok := loadUsername()
 	if !ok {
-		fmt.Print("Enter your Duolingo username: ")
-		fmt.Scanln(&username)
-		if !saveUsername(username) {
-			log.Fatal("Failed to save username")
-		}
-		fmt.Printf("✓ Username set to: %s\n", username)
+		sendNotification("DuoHelper setup incomplete. Please run: DuoHelper.exe setup <username> <time>")
+		return
 	}
 
 	if !taskExists() {
-		fmt.Print("Enter daily reminder time (HH:MM, 24 hour format): ")
-		var t string
-		fmt.Scanln(&t)
-		exe, _ := os.Executable()
-		if err := createScheduledTask(exe, t); err != nil {
-			log.Fatalf("Failed to create task: %v", err)
-		}
-		fmt.Println("✓ Reminder scheduled!")
+		sendNotification("DuoHelper scheduled task not found. Please run setup again.")
 		return
 	}
 
 	jwt, ok := loadToken()
 	if !ok {
-		fmt.Println("❌ No JWT token found! Please log in.")
-		promptLogin()
-
-		// After successful login, reload token and check task
-		jwt, ok = loadToken()
-		if !ok {
-			fmt.Println("❌ Still unable to load JWT after login. Please try again later.")
-			return
-		}
-		fmt.Println("✓ JWT saved successfully! Checking today's task...")
+		sendNotification("DuoHelper: JWT token missing. Please run: DuoHelper.exe login")
+		return
 	}
 
-	data := getUserInfo(jwt, username)
-	if !checkJWTValidity(data) {
-		fmt.Println("❌ Invalid JWT token! Refreshing...")
-		sendNotification("Your Duolingo JWT token is invalid! Refreshing...")
-		promptLogin()
-
-		// After successful login, reload token and check task
-		jwt, ok = loadToken()
-		if !ok {
-			fmt.Println("❌ Unable to load JWT after refresh. Please try again later.")
-			return
-		}
-		data = getUserInfo(jwt, username)
-		if !checkJWTValidity(data) {
-			fmt.Println("❌ Still unable to validate JWT after refresh. Please try again later.")
-			return
-		}
-		fmt.Println("✓ JWT refreshed successfully! Checking today's task...")
+	data, err := getUserInfo(jwt, username)
+	if err != nil || !checkJWTValidity(data) {
+		sendNotification("DuoHelper: Invalid JWT token. Please run: DuoHelper.exe login")
+		return
 	}
 
-	doneToday := checkTodayTask(data)
-
-	if doneToday {
-		fmt.Println("✔ You have already done your Duolingo task today!")
+	if checkTodayTask(data) {
 		sendNotification("You have already completed today's Duolingo lesson! ✅")
 	} else {
-		fmt.Println("❌ You have NOT done your Duolingo task today!")
 		sendNotification("You have NOT completed today's Duolingo lesson! ❌")
 	}
 }
