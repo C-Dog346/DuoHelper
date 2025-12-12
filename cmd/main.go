@@ -233,17 +233,17 @@ func main() {
 
 			// Phase 1: Save credentials (no admin needed)
 			if err := saveUsername(username); err != nil {
-				fmt.Printf("❌ Failed to save username: %v\n", err)
+				fmt.Printf("Failed to save username: %v\n", err)
 				return
 			}
-			fmt.Printf("✓ Username set to: %s\n", username)
+			fmt.Printf("Username set to: %s\n", username)
 
-			fmt.Println("\n✓ Opening browser for login...")
+			fmt.Println("\nOpening browser for login...")
 			if err := promptLogin(); err != nil {
-				fmt.Printf("❌ Login failed: %v\n", err)
+				fmt.Printf("Login failed: %v\n", err)
 				return
 			}
-			fmt.Println("✓ Login successful!")
+			fmt.Println("Login successful!")
 
 			// Phase 2: Create scheduled task (requires admin)
 			// Capture current user before potential elevation
@@ -252,29 +252,29 @@ func main() {
 			runAsUser := fmt.Sprintf("%s\\%s", currentDomain, currentUser)
 
 			if !isAdmin() {
-				fmt.Println("\n🔒 Creating scheduled task requires administrator privileges...")
+				fmt.Println("\nCreating scheduled task requires administrator privileges...")
 				fmt.Println("   Relaunching as administrator...")
 				exe, _ := os.Executable()
 				cmd := exec.Command("powershell", "Start-Process", "-FilePath", fmt.Sprintf("'%s'", exe), "-ArgumentList", fmt.Sprintf("'settime','%s','%s'", scheduleTime, runAsUser), "-Verb", "RunAs", "-Wait")
 				if err := cmd.Run(); err != nil {
-					fmt.Println("❌ Failed to elevate. Please run manually as admin:")
+					fmt.Println("Failed to elevate. Please run manually as admin:")
 					fmt.Printf("   DuoHelper.exe settime %s %s\n", scheduleTime, runAsUser)
 					return
 				}
-				fmt.Println("\n✅ Setup complete! DuoHelper will check your Duolingo progress daily.")
+				fmt.Println("\nSetup complete! DuoHelper will check your Duolingo progress daily.")
 			} else {
 				// Already admin, create task directly
 				exe, err := os.Executable()
 				if err != nil {
-					fmt.Printf("❌ Failed to get executable path: %v\n", err)
+					fmt.Printf("Failed to get executable path: %v\n", err)
 					return
 				}
 				if err := createScheduledTask(exe, scheduleTime, runAsUser); err != nil {
-					fmt.Printf("❌ Failed to create task: %v\n", err)
+					fmt.Printf("Failed to create task: %v\n", err)
 					return
 				}
-				fmt.Printf("✓ Daily reminder scheduled for %s\n", scheduleTime)
-				fmt.Println("\n✅ Setup complete! DuoHelper will check your Duolingo progress daily.")
+				fmt.Printf("Daily reminder scheduled for %s\n", scheduleTime)
+				fmt.Println("\nSetup complete! DuoHelper will check your Duolingo progress daily.")
 			}
 			return
 
@@ -285,7 +285,7 @@ func main() {
 			}
 			exe, err := os.Executable()
 			if err != nil {
-				fmt.Printf("❌ Failed to get executable path: %v\n", err)
+				fmt.Printf("Failed to get executable path: %v\n", err)
 				return
 			}
 
@@ -300,11 +300,11 @@ func main() {
 			}
 
 			if err := createScheduledTask(exe, os.Args[2], runAsUser); err != nil {
-				fmt.Printf("❌ Failed to update task: %v\n", err)
-				fmt.Println("💡 Tip: Run PowerShell as Administrator to modify scheduled tasks")
+				fmt.Printf("Failed to update task: %v\n", err)
+				fmt.Println("Tip: Run PowerShell as Administrator to modify scheduled tasks")
 				return
 			}
-			fmt.Printf("✓ Time updated to %s\n", os.Args[2])
+			fmt.Printf("Time updated to %s\n", os.Args[2])
 			return
 
 		case "setusername":
@@ -313,18 +313,18 @@ func main() {
 				return
 			}
 			if err := saveUsername(os.Args[2]); err != nil {
-				fmt.Printf("❌ Failed to save username: %v\n", err)
+				fmt.Printf("Failed to save username: %v\n", err)
 				return
 			}
-			fmt.Printf("✓ Username set to: %s\n", os.Args[2])
+			fmt.Printf("Username set to: %s\n", os.Args[2])
 			return
 
 		case "login":
 			fmt.Println("Opening browser for login...")
 			if err := promptLogin(); err != nil {
-				fmt.Printf("❌ Login failed: %v\n", err)
+				fmt.Printf("Login failed: %v\n", err)
 			} else {
-				fmt.Println("✓ Login successful!")
+				fmt.Println("Login successful!")
 			}
 			return
 
