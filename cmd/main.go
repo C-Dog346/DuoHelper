@@ -2,7 +2,6 @@
 // TO DO:
 // - Improve error handling and logging
 // - Add unit tests for functions
-// - Modularise code for use on any windows computer with chrome
 // - Add support for other OS (macOS, Linux)
 
 package main
@@ -14,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/chromedp/cdproto/network"
@@ -33,12 +33,15 @@ const (
 )
 
 // Windows Credential Manager functions
-func loadToken() (string, bool) {
+func loadToken() (string, error) {
 	cred, err := wincred.GetGenericCredential(credentialJWT)
-	if err != nil || len(cred.CredentialBlob) == 0 {
-		return "", false
+	if err != nil {
+		return "", err
 	}
-	return string(cred.CredentialBlob), true
+	if len(cred.CredentialBlob) == 0 {
+		return "", fmt.Errorf("JWT token is empty")
+	}
+	return string(cred.CredentialBlob), nil
 }
 
 func saveToken(jwt string) error {
@@ -49,12 +52,15 @@ func saveToken(jwt string) error {
 	return cred.Write()
 }
 
-func loadUsername() (string, bool) {
+func loadUsername() (string, error) {
 	cred, err := wincred.GetGenericCredential(credentialUsername)
-	if err != nil || len(cred.CredentialBlob) == 0 {
-		return "", false
+	if err != nil {
+		return "", err
 	}
-	return string(cred.CredentialBlob), true
+	if len(cred.CredentialBlob) == 0 {
+		return "", fmt.Errorf("username is empty")
+	}
+	return string(cred.CredentialBlob), nil
 }
 
 func saveUsername(username string) error {
@@ -66,28 +72,28 @@ func saveUsername(username string) error {
 }
 
 // Duolingo API functions
-func getUserInfo(jwt, username string) (map[string]interface{}, bool) {
+func getUserInfo(jwt, username string) (map[string]interface{}, error) {
 	req, err := http.NewRequest("GET", duolingoAPIBase+"/users/"+username, nil)
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("failed to fetch user info: %w", err)
 	}
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, false
+		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
-	return data, true
+	return data, nil
 }
 
 func checkJWTValidity(data map[string]interface{}) bool {
-	_, ok := data["username"]
+	_, ok := data["username"] // check for presence of expected field
 	return ok
 }
 
@@ -97,7 +103,7 @@ func checkTodayTask(data map[string]interface{}) bool {
 }
 
 // Browser automation for login
-func promptLogin() bool {
+func promptLogin() error {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", false),
 		chromedp.Flag("disable-gpu", false),
@@ -142,14 +148,17 @@ func promptLogin() bool {
 		}),
 	)
 
-	if err != nil || jwt == "" {
-		return false
+	if err != nil {
+		return fmt.Errorf("browser automation failed: %w", err)
+	}
+	if jwt == "" {
+		return fmt.Errorf("no JWT token found")
 	}
 
 	if err := saveToken(jwt); err != nil {
-		return false
+		return fmt.Errorf("failed to save token: %w", err)
 	}
-	return true
+	return nil
 }
 
 // Windows notification functions
@@ -170,10 +179,11 @@ func taskExists() bool {
 	return cmd.Run() == nil
 }
 
-func createScheduledTask(exePath, scheduleTime string) error {
+func createScheduledTask(exePath, scheduleTime, runAsUser string) error {
 	cmd := exec.Command("schtasks",
 		"/Create", "/SC", "DAILY", "/TN", taskName,
-		"/TR", fmt.Sprintf(`"%s"`, exePath), "/ST", scheduleTime, "/F", "/RL", "HIGHEST")
+		"/TR", fmt.Sprintf(`"%s"`, exePath), "/ST", scheduleTime,
+		"/RU", runAsUser, "/F", "/RL", "HIGHEST", "/IT")
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -189,7 +199,26 @@ func isAdmin() bool {
 	return err == nil
 }
 
+// Hide console window (for silent scheduled runs)
+func hideConsoleWindow() {
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	user32 := syscall.NewLazyDLL("user32.dll")
+
+	getConsoleWindow := kernel32.NewProc("GetConsoleWindow")
+	showWindow := user32.NewProc("ShowWindow")
+
+	hwnd, _, _ := getConsoleWindow.Call()
+	if hwnd != 0 {
+		showWindow.Call(hwnd, 0) // SW_HIDE = 0
+	}
+}
+
 func main() {
+	// Hide console window when running in silent mode (scheduled task)
+	if len(os.Args) == 1 {
+		hideConsoleWindow()
+	}
+
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "setup":
@@ -210,21 +239,26 @@ func main() {
 			fmt.Printf("✓ Username set to: %s\n", username)
 
 			fmt.Println("\n✓ Opening browser for login...")
-			if !promptLogin() {
-				fmt.Println("❌ Login failed. Please try again.")
+			if err := promptLogin(); err != nil {
+				fmt.Printf("❌ Login failed: %v\n", err)
 				return
 			}
 			fmt.Println("✓ Login successful!")
 
 			// Phase 2: Create scheduled task (requires admin)
+			// Capture current user before potential elevation
+			currentUser := os.Getenv("USERNAME")
+			currentDomain := os.Getenv("USERDOMAIN")
+			runAsUser := fmt.Sprintf("%s\\%s", currentDomain, currentUser)
+
 			if !isAdmin() {
 				fmt.Println("\n🔒 Creating scheduled task requires administrator privileges...")
 				fmt.Println("   Relaunching as administrator...")
 				exe, _ := os.Executable()
-				cmd := exec.Command("powershell", "Start-Process", "-FilePath", fmt.Sprintf("'%s'", exe), "-ArgumentList", fmt.Sprintf("'settime','%s'", scheduleTime), "-Verb", "RunAs", "-Wait")
+				cmd := exec.Command("powershell", "Start-Process", "-FilePath", fmt.Sprintf("'%s'", exe), "-ArgumentList", fmt.Sprintf("'settime','%s','%s'", scheduleTime, runAsUser), "-Verb", "RunAs", "-Wait")
 				if err := cmd.Run(); err != nil {
 					fmt.Println("❌ Failed to elevate. Please run manually as admin:")
-					fmt.Printf("   DuoHelper.exe settime %s\n", scheduleTime)
+					fmt.Printf("   DuoHelper.exe settime %s %s\n", scheduleTime, runAsUser)
 					return
 				}
 				fmt.Println("\n✅ Setup complete! DuoHelper will check your Duolingo progress daily.")
@@ -235,7 +269,7 @@ func main() {
 					fmt.Printf("❌ Failed to get executable path: %v\n", err)
 					return
 				}
-				if err := createScheduledTask(exe, scheduleTime); err != nil {
+				if err := createScheduledTask(exe, scheduleTime, runAsUser); err != nil {
 					fmt.Printf("❌ Failed to create task: %v\n", err)
 					return
 				}
@@ -246,7 +280,7 @@ func main() {
 
 		case "settime":
 			if len(os.Args) < 3 {
-				fmt.Println("Usage: DuoHelper.exe settime HH:MM")
+				fmt.Println("Usage: DuoHelper.exe settime HH:MM [DOMAIN\\USER]")
 				return
 			}
 			exe, err := os.Executable()
@@ -254,7 +288,18 @@ func main() {
 				fmt.Printf("❌ Failed to get executable path: %v\n", err)
 				return
 			}
-			if err := createScheduledTask(exe, os.Args[2]); err != nil {
+
+			// Use provided user or fall back to current user
+			runAsUser := ""
+			if len(os.Args) >= 4 {
+				runAsUser = os.Args[3]
+			} else {
+				username := os.Getenv("USERNAME")
+				domain := os.Getenv("USERDOMAIN")
+				runAsUser = fmt.Sprintf("%s\\%s", domain, username)
+			}
+
+			if err := createScheduledTask(exe, os.Args[2], runAsUser); err != nil {
 				fmt.Printf("❌ Failed to update task: %v\n", err)
 				fmt.Println("💡 Tip: Run PowerShell as Administrator to modify scheduled tasks")
 				return
@@ -276,10 +321,10 @@ func main() {
 
 		case "login":
 			fmt.Println("Opening browser for login...")
-			if promptLogin() {
-				fmt.Println("✓ Login successful!")
+			if err := promptLogin(); err != nil {
+				fmt.Printf("❌ Login failed: %v\n", err)
 			} else {
-				fmt.Println("❌ Login failed. Please try again.")
+				fmt.Println("✓ Login successful!")
 			}
 			return
 
@@ -301,8 +346,8 @@ func main() {
 		}
 	}
 
-	username, ok := loadUsername()
-	if !ok {
+	username, err := loadUsername()
+	if err != nil {
 		sendNotification("DuoHelper setup incomplete. Please run: DuoHelper.exe setup <username> <time>")
 		return
 	}
@@ -312,14 +357,14 @@ func main() {
 		return
 	}
 
-	jwt, ok := loadToken()
-	if !ok {
+	jwt, err := loadToken()
+	if err != nil {
 		sendNotification("DuoHelper: JWT token missing. Please run: DuoHelper.exe login")
 		return
 	}
 
-	data, ok := getUserInfo(jwt, username)
-	if !ok {
+	data, err := getUserInfo(jwt, username)
+	if err != nil {
 		sendNotification("DuoHelper: Failed to fetch user info. Please run: DuoHelper.exe login")
 		return
 	}
