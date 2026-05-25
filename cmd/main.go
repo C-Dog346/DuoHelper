@@ -1,5 +1,7 @@
-﻿// go build -o bin\DuoHelper.exe .\cmd\main.go
-// TO DO:
+﻿// Build command: go build -o bin\DuoHelper.exe .\cmd\main.go
+// Run command: .\bin\DuoHelper.exe setup YourUsername Your:Time
+
+// Potential Future upgrades:
 // - Improve error handling and logging
 // - Add unit tests for functions
 // - Add support for other OS (macOS, Linux)
