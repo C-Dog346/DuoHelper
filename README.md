@@ -1,3 +1,5 @@
+DISCLAIMER: I make no guarantees of credential safety. Use at your own risk. 
+
 # DuoHelper
 
 DuoHelper alerts you (on Windows) when your daily Duolingo lesson hasn't been completed by a configured time. It uses a Duolingo JWT token to query the (undocumented) Duolingo API and determine whether your streak/lesson for the day has been completed.
