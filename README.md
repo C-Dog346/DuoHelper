@@ -1,12 +1,62 @@
 # DuoHelper
-A tool to alert me that I need to complete my daily language learning lesson on Duolingo, if it is not done by a certain time.
 
-The project is a WIP and will only work on my PC as it is right now. 
+DuoHelper alerts you (on Windows) when your daily Duolingo lesson hasn't been completed by a configured time. It uses a Duolingo JWT token to query the (undocumented) Duolingo API and determine whether your streak/lesson for the day has been completed.
 
-## Functionality
-Currently, it needs the jwt_token to be provided inside of `tokens.json`. Using this, it can authenticate an API request to the undocumented Duolingo API to see if the streak has been extended today. 
+Status: Work in progress — currently tested locally on Windows.
 
-## TO DO
-- Automate checking with Windows Scheduler
-- Send an answer via a Windows notification
-- When the JWT token expires, send a prompt to log in via the Windows notification. Extract the token after login - this will keep manual effort low. 
+## Features
+
+- Check whether the day's lesson/streak has been extended using a Duolingo JWT token
+- Send a local notification (planned)
+- Intended to be run from Task Scheduler or a similar scheduler
+
+## Requirements
+
+- Go 1.20+ (see `go.mod`)
+- Windows (for native notification integration; core check should be cross-platform)
+- A `tokens.json` file containing your Duolingo JWT token (see example below)
+
+## tokens.json
+
+Create a `tokens.json` file in the project directory with the following structure:
+
+{
+"jwt_token": "your_duolingo_jwt_here"
+}
+
+Keep this file private — it contains authentication credentials.
+
+## Build & Run
+
+To build the binary locally:
+
+```bash
+go build -o bin/duohelper ./cmd
+```
+
+Run directly (development):
+
+```bash
+go run ./cmd
+```
+
+## Running in production / Scheduling
+
+Use Windows Task Scheduler to run the built binary at the desired time each day. Configure the task to run `bin/duohelper` and ensure the working directory contains `tokens.json`.
+
+## TODO
+
+- Send Windows notification when a lesson is missing
+- Add automated token refresh flow or an easier re-auth flow when the token expires
+- Add tests and CI
+- Improve cross-platform support
+
+## Security
+
+- Do not commit `tokens.json` or any secrets to version control. Add it to `.gitignore` if you store it in the repo root.
+
+## License
+
+MIT — see LICENSE file if present.
+
+If you'd like, I can also add a small example `tokens.json` template, update `.gitignore`, or wire up a basic Windows notification. Which would you prefer next?
